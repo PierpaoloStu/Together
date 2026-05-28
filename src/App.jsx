@@ -3,6 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 const STORAGE_KEY = "together-v1";
 const THEME_KEY = "together-theme";
 const PIN_CODE = "4443";
+const IMG_KEY = "together-images";
 
 const PROFILES = {
   io:      { label: "Pierpaolo", color: "#6b9fff", colorLight: "#4a7fd9" },
@@ -10,6 +11,7 @@ const PROFILES = {
 };
 
 const MACRO_AREAS = ["Fisse", "Variabili", "Straordinarie", "Piacere", "Risparmi"];
+const SHARED_EXPENSE_CATS = ["Mutuo", "Bolletta Luce", "Bolletta Gas"];
 
 const MONTHS = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
 
@@ -42,6 +44,11 @@ const loadTheme = () => {
   } catch { return "dark"; }
 };
 const saveTheme = (t) => { try { localStorage.setItem(THEME_KEY, t); } catch {} };
+const loadImages = () => {
+  try { const raw = localStorage.getItem(IMG_KEY); return raw ? JSON.parse(raw) : {}; }
+  catch { return {}; }
+};
+const saveImages = (imgs) => { try { localStorage.setItem(IMG_KEY, JSON.stringify(imgs)); } catch {} };
 
 const TogetherLogo = ({size=120, isDark}) => (
   <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
@@ -88,6 +95,13 @@ const AmountInput = ({inputRef, style, lbl}) => (
   </div>
 );
 
+const TextInput = ({inputRef, style, lbl, placeholder}) => (
+  <div>
+    <label style={lbl}>{placeholder}</label>
+    <input ref={inputRef} style={style} type="text" autoComplete="off" defaultValue="" placeholder={placeholder}/>
+  </div>
+);
+
 const PieChart = ({data, colors, isDark, showMoney=false}) => {
   if(!data || data.length === 0) return null;
   const total = data.reduce((s,[,v])=>s+v, 0);
@@ -130,6 +144,7 @@ const PieChart = ({data, colors, isDark, showMoney=false}) => {
 export default function Together() {
   const [theme, setTheme] = useState(() => loadTheme());
   const [data, setData] = useState(() => loadData());
+  const [images, setImages] = useState(() => loadImages());
   const [loading, setLoading] = useState(true);
   const [locked, setLocked] = useState(true);
   const [pin, setPin] = useState("");
@@ -141,7 +156,8 @@ export default function Together() {
   const [view, setView] = useState("main");
   
   const amountInputRef = useRef(null);
-  const [form, setForm] = useState({type:"uscita",category:"",note:"",date:TODAY()});
+  const noteInputRef = useRef(null);
+  const [form, setForm] = useState({type:"uscita",category:"",note:"",date:TODAY(),shared:false});
   const [toast, setToast] = useState(null);
   
   const [newCategoryModal, setNewCategoryModal] = useState(false);
@@ -154,7 +170,7 @@ export default function Together() {
   const [newMonthModal, setNewMonthModal] = useState(false);
   const [newMonthKey, setNewMonthKey] = useState("");
   
-  const [searchMacro, setSearchMacro] = useState("");
+  const [imageUploadProfile, setImageUploadProfile] = useState(null);
 
   useEffect(() => { setTimeout(() => setLoading(false), 600); }, []);
 
@@ -254,32 +270,46 @@ export default function Together() {
 
   const addTransaction = () => {
     const amountValue = amountInputRef.current?.value || "";
+    const noteValue = noteInputRef.current?.value || "";
     if(!amountValue||!form.category){ toast_("Inserisci importo e categoria",false); return; }
     const amount = parseFloat(amountValue.replace(",","."));
     if(isNaN(amount)||amount<=0){ toast_("Importo non valido",false); return; }
     
     const nd=JSON.parse(JSON.stringify(data));
-    const prof=nd.profiles[selectedProfile];
-    if(!prof.months[activeMonth]) prof.months[activeMonth]={transactions:[],savings:0};
-    
     const macroArea = nd.categories[form.category] || "";
     
-    if(form.type==="risparmi"){
-      prof.months[activeMonth].savings = (prof.months[activeMonth].savings||0) + amount;
-      prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:"risparmi",amount,category:form.category,note:form.note,date:form.date,macroArea:"Risparmi"});
-      toast_("Risparmio aggiunto ✓");
-    } else if(form.type==="uscita" && macroArea==="Risparmi"){
-      prof.months[activeMonth].savings = (prof.months[activeMonth].savings||0) - amount;
-      prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:form.type,amount,category:form.category,note:form.note,date:form.date,macroArea});
-      toast_("Prelievo da risparmi ✓");
+    if(form.shared && form.type==="uscita" && totStip>0){
+      const quotaIo=amount*pctIo, quotaMar=amount*pctMar;
+      const base={type:"uscita",category:form.category,macroArea,note:noteValue,date:form.date,shared:true};
+      ["io","martina"].forEach(who=>{
+        const prof=nd.profiles[who];
+        if(!prof.months[activeMonth]) prof.months[activeMonth]={transactions:[],savings:0};
+        const q=who==="io"?quotaIo:quotaMar;
+        prof.months[activeMonth].transactions.push({...base,id:Date.now()+"-"+who,amount:parseFloat(q.toFixed(2))});
+      });
+      toast_(`Divisa: Pierpaolo ${fmt(quotaIo)} · Martina ${fmt(quotaMar)} ✓`);
     } else {
-      prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:form.type,amount,category:form.category,note:form.note,date:form.date,macroArea});
-      toast_("Aggiunta ✓");
+      const prof=nd.profiles[selectedProfile];
+      if(!prof.months[activeMonth]) prof.months[activeMonth]={transactions:[],savings:0};
+      
+      if(form.type==="risparmi"){
+        prof.months[activeMonth].savings = (prof.months[activeMonth].savings||0) + amount;
+        prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:"risparmi",amount,category:form.category,note:noteValue,date:form.date,macroArea:"Risparmi"});
+        toast_("Risparmio aggiunto ✓");
+      } else if(form.type==="uscita" && macroArea==="Risparmi"){
+        prof.months[activeMonth].savings = (prof.months[activeMonth].savings||0) - amount;
+        prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:form.type,amount,category:form.category,note:noteValue,date:form.date,macroArea});
+        toast_("Prelievo da risparmi ✓");
+      } else {
+        prof.months[activeMonth].transactions.push({id:Date.now().toString(),type:form.type,amount,category:form.category,note:noteValue,date:form.date,macroArea});
+        toast_("Aggiunta ✓");
+      }
     }
     
     save(nd);
     if(amountInputRef.current) amountInputRef.current.value="";
-    setForm({type:form.type,category:"",note:"",date:TODAY()});
+    if(noteInputRef.current) noteInputRef.current.value="";
+    setForm({type:form.type,category:"",note:"",date:TODAY(),shared:false});
   };
 
   const addLoan = () => {
@@ -343,6 +373,20 @@ export default function Together() {
       d.setMonth(d.getMonth()+1);
     }
     return opts;
+  };
+
+  const handleImageUpload = (e, profile) => {
+    const file = e.target.files?.[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const base64 = evt.target.result;
+      const newImages = {...images, [profile]: base64};
+      setImages(newImages);
+      saveImages(newImages);
+      toast_("Immagine salvata ✓");
+    };
+    reader.readAsDataURL(file);
   };
 
   const getProfileData = (who) => {
@@ -431,7 +475,6 @@ export default function Together() {
         <div style={{position:"fixed",inset:0,zIndex:8888,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,backdropFilter:"blur(6px)"}}>
           <Card style={{width:"100%",maxWidth:380}}>
             <div style={{fontSize:"0.75rem",color:colors.success,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:16,fontWeight:700}}>+ Nuovo mese</div>
-            <div style={{fontSize:"0.85rem",color:colors.textSub,marginBottom:20}}>Risparmi portati dal mese precedente</div>
             <select value={newMonthKey} onChange={e=>setNewMonthKey(e.target.value)} style={{...inp,marginBottom:20}}>
               <option value="">Scegli...</option>
               {futureMonths().map(m=><option key={m} value={m}>{ML(m)}</option>)}
@@ -506,6 +549,18 @@ export default function Together() {
         </div>
       )}
 
+      {imageUploadProfile && (
+        <div style={{position:"fixed",inset:0,zIndex:8888,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,backdropFilter:"blur(6px)"}}>
+          <Card style={{width:"100%",maxWidth:380}}>
+            <div style={{fontSize:"0.75rem",color:colors.accent,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:16,fontWeight:700}}>Foto {PROFILES[imageUploadProfile].label}</div>
+            <div style={{marginBottom:20}}>
+              <input type="file" accept="image/*" onChange={(e)=>{handleImageUpload(e, imageUploadProfile);setImageUploadProfile(null);}} style={{width:"100%",padding:"10px",borderRadius:10,border:`1px dashed ${colors.border}`,background:colors.input,cursor:"pointer"}}/>
+            </div>
+            <button onClick={()=>setImageUploadProfile(null)} style={{width:"100%",padding:"12px 0",background:colors.card,border:`1px solid ${colors.border}`,color:colors.textSub,borderRadius:10,cursor:"pointer",fontWeight:600}}>Annulla</button>
+          </Card>
+        </div>
+      )}
+
       {/* HEADER */}
       <div style={{background:colors.header,borderBottom:`1px solid ${colors.border}`,padding:"16px 20px",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(20px)"}}>
         <div style={{maxWidth:1100,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -547,35 +602,56 @@ export default function Together() {
         
         {view==="main" && (
           <div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
-              <Card onClick={()=>{setSelectedProfile("io");setView("profile");}} style={{cursor:"pointer",aspectRatio:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-                <div style={{fontSize:"3rem",marginBottom:10}}>👤</div>
+            {/* INSIEME IN ALTO */}
+            <Card onClick={()=>{setSelectedProfile(null);setView("couple");}} style={{cursor:"pointer",padding:24,marginBottom:24}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(2, 1fr)",gap:20}}>
+                <div>
+                  <div style={{fontSize:"2.2rem"}}>💑</div>
+                  <div style={{fontSize:"1.1rem",fontWeight:700,color:colors.accent,marginBottom:8,marginTop:8}}>Insieme</div>
+                  <div style={{fontSize:"0.7rem",color:colors.textDim,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:12}}>Saldo Coppia</div>
+                  <div style={{fontSize:"1.5rem",fontWeight:700,color:coupData.saldo>=0?colors.success:colors.danger,marginBottom:16}}>{fmt(coupData.saldo)}</div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+                  <div>
+                    <div style={{fontSize:"0.65rem",color:colors.textDim,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>Entrate</div>
+                    <div style={{fontSize:"0.95rem",fontWeight:700,color:colors.success}}>{fmt(coupData.entrate)}</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:"0.65rem",color:colors.textDim,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>Uscite</div>
+                    <div style={{fontSize:"0.95rem",fontWeight:700,color:colors.danger}}>{fmt(coupData.uscite)}</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:"0.65rem",color:colors.textDim,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:6}}>Risparmi</div>
+                    <div style={{fontSize:"0.95rem",fontWeight:700,color:colors.accent}}>{fmt(coupData.savings)}</div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* PIERPAOLO E MARTINA */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+              <Card onClick={()=>{setSelectedProfile("io");setView("profile");}} style={{cursor:"pointer",aspectRatio:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative"}}>
+                {images.io ? (
+                  <img src={images.io} style={{width:80,height:80,borderRadius:16,objectFit:"cover",marginBottom:12}}/>
+                ) : (
+                  <div style={{fontSize:"3rem",marginBottom:12}}>👤</div>
+                )}
+                <button onClick={(e)=>{e.stopPropagation();setImageUploadProfile("io");}} style={{position:"absolute",top:10,right:10,width:36,height:36,borderRadius:8,background:colors.accent,border:"none",color:"#000",cursor:"pointer",fontSize:"1.2rem",fontWeight:700}}>+</button>
                 <div style={{fontSize:"1rem",fontWeight:700,color:profColor("io"),marginBottom:6}}>Pierpaolo</div>
                 <div style={{fontSize:"0.75rem",color:colors.textSub}}>Saldo: <strong style={{color:ioData.saldo>=0?colors.success:colors.danger}}>{fmt(ioData.saldo)}</strong></div>
               </Card>
               
-              <Card onClick={()=>{setSelectedProfile("martina");setView("profile");}} style={{cursor:"pointer",aspectRatio:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-                <div style={{fontSize:"3rem",marginBottom:10}}>👩</div>
+              <Card onClick={()=>{setSelectedProfile("martina");setView("profile");}} style={{cursor:"pointer",aspectRatio:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative"}}>
+                {images.martina ? (
+                  <img src={images.martina} style={{width:80,height:80,borderRadius:16,objectFit:"cover",marginBottom:12}}/>
+                ) : (
+                  <div style={{fontSize:"3rem",marginBottom:12}}>👩</div>
+                )}
+                <button onClick={(e)=>{e.stopPropagation();setImageUploadProfile("martina");}} style={{position:"absolute",top:10,right:10,width:36,height:36,borderRadius:8,background:colors.accent,border:"none",color:"#000",cursor:"pointer",fontSize:"1.2rem",fontWeight:700}}>+</button>
                 <div style={{fontSize:"1rem",fontWeight:700,color:profColor("martina"),marginBottom:6}}>Martina</div>
                 <div style={{fontSize:"0.75rem",color:colors.textSub}}>Saldo: <strong style={{color:marData.saldo>=0?colors.success:colors.danger}}>{fmt(marData.saldo)}</strong></div>
               </Card>
             </div>
-
-            <Card onClick={()=>{setSelectedProfile(null);setView("couple");}} style={{cursor:"pointer",padding:24}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:16}}>
-                <div style={{display:"flex",alignItems:"center",gap:14}}>
-                  <div style={{fontSize:"2.5rem"}}>💑</div>
-                  <div>
-                    <div style={{fontSize:"1.1rem",fontWeight:700,color:colors.accent,marginBottom:2}}>Insieme</div>
-                    <div style={{fontSize:"0.75rem",color:colors.textSub}}>Vista combinata</div>
-                  </div>
-                </div>
-                <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:"0.7rem",color:colors.textSub,marginBottom:4}}>Saldo Coppia</div>
-                  <div style={{fontSize:"1.3rem",fontWeight:700,color:coupData.saldo>=0?colors.success:colors.danger}}>{fmt(coupData.saldo)}</div>
-                </div>
-              </div>
-            </Card>
           </div>
         )}
 
@@ -585,7 +661,6 @@ export default function Together() {
             
             <div style={{fontSize:"1.2rem",fontWeight:700,marginBottom:20,color:profColor(selectedProfile)}}>{PROFILES[selectedProfile].label}</div>
             
-            {/* Metodo 50/30/20 */}
             {(() => {
               const d = selectedProfile==="io"?ioData:marData;
               if(d.stipendio===0) return <Card style={{marginBottom:20}}><div style={{textAlign:"center",color:colors.textDim,padding:20}}>Inserisci stipendio per 50/30/20</div></Card>;
@@ -632,6 +707,9 @@ export default function Together() {
                 <div><label style={lbl}>DATA</label><input style={inp} type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></div>
               </div>
               <div style={{marginBottom:12}}>
+                <TextInput inputRef={noteInputRef} style={inp} lbl="NOTE (OPZIONALE)" placeholder="Descrizione..."/>
+              </div>
+              <div style={{marginBottom:12}}>
                 <label style={lbl}>CATEGORIA</label>
                 <div style={{display:"flex",gap:8}}>
                   <select style={{...inp,flex:1}} value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>
@@ -641,6 +719,12 @@ export default function Together() {
                   <button onClick={()=>setNewCategoryModal(true)} style={{padding:"12px 14px",background:colors.success,border:"none",color:"#fff",borderRadius:10,cursor:"pointer",fontSize:"0.8rem",fontWeight:700}}>+</button>
                 </div>
               </div>
+              {form.type==="uscita" && SHARED_EXPENSE_CATS.includes(form.category) && (
+                <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+                  <input type="checkbox" checked={form.shared} onChange={e=>setForm({...form,shared:e.target.checked})} style={{width:18,height:18,cursor:"pointer"}}/>
+                  <label style={{fontSize:"0.8rem",color:colors.textSub,cursor:"pointer"}}>Dividi proporzionalmente (basato su stipendio)</label>
+                </div>
+              )}
               <button onClick={addTransaction} style={{width:"100%",padding:"14px 0",background:profColor(selectedProfile),border:"none",color:"#fff",borderRadius:10,cursor:"pointer",fontSize:"0.85rem",fontWeight:700}}>AGGIUNGI</button>
             </Card>
 
